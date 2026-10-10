@@ -1,0 +1,26 @@
+plugins {
+    id 'com.android.application'
+    id 'com.google.gms.google-services'
+}
+
+android {
+    namespace 'com.mantusir.pdfviewer'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.mantusir.pdfviewer'
+        minSdk 24
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+    }
+}
+
+dependencies {
+    implementation 'com.dineshdev:pdfbox-android:2.0.27.1'
+
+    implementation platform('com.google.firebase:firebase-bom:34.19.0')
+    implementation 'com.google.firebase:firebase-analytics'
+    implementation 'com.google.firebase:firebase-config'
+    implementation 'androidx.core:core:1.16.0'
+}

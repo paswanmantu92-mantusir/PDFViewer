@@ -1,0 +1,1460 @@
+package com.mantusir.pdfviewer;
+
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.RectF;
+import android.graphics.pdf.PdfRenderer;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.ParcelFileDescriptor;
+import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
+import android.view.View;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import android.widget.Toast;
+import android.webkit.WebSettings;
+import java.io.File;
+import androidx.core.content.FileProvider;
+import android.provider.Settings;
+import android.content.pm.PackageManager;
+import android.content.Context;
+import android.webkit.URLUtil;
+import android.webkit.DownloadListener;
+import android.os.Environment;
+import android.app.DownloadManager;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader;
+import com.tom_roush.pdfbox.pdmodel.PDDocument;
+import com.tom_roush.pdfbox.text.PDFTextStripper;
+
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+
+public class MainActivity extends Activity {
+
+    private static final int OPEN_PDF = 1001;
+
+    private PdfRenderer renderer;
+    private ParcelFileDescriptor parcelFileDescriptor;
+    private Uri currentUri;
+
+    private DocumentView documentView;
+    private TextView titleView;
+    private WebView webView;
+
+    private final List<Integer> searchPages = new ArrayList<>();
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+
+        PDFBoxResourceLoader.init(getApplicationContext());
+
+        buildInterface();
+
+        Intent intent = getIntent();
+
+        if (Intent.ACTION_VIEW.equals(intent.getAction())
+                && intent.getData() != null) {
+
+            loadPdf(intent.getData());
+        }
+    }
+
+    private void buildInterface() {
+
+        LinearLayout root =
+                new LinearLayout(this);
+
+        root.setOrientation(
+                LinearLayout.VERTICAL
+        );
+
+        root.setBackgroundColor(
+                Color.rgb(245, 245, 245)
+        );
+
+        LinearLayout toolbar =
+                new LinearLayout(this);
+
+        toolbar.setGravity(
+                Gravity.CENTER_VERTICAL
+        );
+
+        toolbar.setPadding(
+                4,
+                3,
+                4,
+                3
+        );
+
+        Button open =
+                new Button(this);
+
+        open.setText("Open");
+
+        Button home =
+                new Button(this);
+
+        home.setText("Home");
+
+        Button share =
+                new Button(this);
+
+        share.setText("Share");
+
+        titleView =
+                new TextView(this);
+
+        titleView.setText(
+                "PDF Viewer"
+        );
+
+        titleView.setTextSize(16);
+
+        titleView.setGravity(
+                Gravity.CENTER_VERTICAL
+        );
+
+        titleView.setSingleLine(true);
+
+        titleView.setPadding(
+                8,
+                0,
+                8,
+                0
+        );
+
+        toolbar.addView(
+                open,
+                new LinearLayout.LayoutParams(
+                        -2,
+                        -2
+                )
+        );
+
+        toolbar.addView(
+                titleView,
+                new LinearLayout.LayoutParams(
+                        0,
+                        -2,
+                        1
+                )
+        );
+
+        toolbar.addView(
+                home,
+                new LinearLayout.LayoutParams(
+                        -2,
+                        -2
+                )
+        );
+
+        toolbar.addView(
+                share,
+                new LinearLayout.LayoutParams(
+                        -2,
+                        -2
+                )
+        );
+
+        root.addView(toolbar);
+
+        documentView =
+                new DocumentView(this);
+
+        root.addView(
+                documentView,
+                new LinearLayout.LayoutParams(
+                        -1,
+                        0,
+                        1
+                )
+        );
+
+        webView = new WebView(this);
+        WebSettings webSettings = webView.getSettings();
+        webSettings.setJavaScriptEnabled(true);
+        webSettings.setDomStorageEnabled(true);
+        webView.setWebViewClient(new WebViewClient());
+        webView.setDownloadListener(
+                (url, userAgent, contentDisposition, mimeType, contentLength) -> {
+                    if (url != null && url.toLowerCase(Locale.ROOT).contains(".apk")) {
+                        DownloadManager.Request request =
+                                new DownloadManager.Request(Uri.parse(url));
+
+                        request.setTitle("Downloading app");
+                        request.setDescription("APK download");
+                        request.setMimeType("application/vnd.android.package-archive");
+                        request.setNotificationVisibility(
+                                DownloadManager.Request.VISIBILITY_VISIBLE);
+
+                        File downloadDir =
+                                getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+
+                        if (downloadDir == null) {
+                            Toast.makeText(
+                                    this,
+                                    "Download folder unavailable",
+                                    Toast.LENGTH_LONG
+                            ).show();
+                            return;
+                        }
+
+                        File apkFile = new File(downloadDir, "downloaded-app.apk");
+
+                        if (apkFile.exists()) {
+                            apkFile.delete();
+                        }
+
+                        request.setDestinationUri(Uri.fromFile(apkFile));
+
+                        DownloadManager downloadManager =
+                                (DownloadManager) getSystemService(
+                                        Context.DOWNLOAD_SERVICE);
+
+                        long downloadId = downloadManager.enqueue(request);
+
+                        Toast.makeText(
+                                this,
+                                "APK download started",
+                                Toast.LENGTH_SHORT
+                        ).show();
+
+                        new Thread(() -> {
+                            boolean downloading = true;
+
+                            while (downloading) {
+                                DownloadManager.Query query =
+                                        new DownloadManager.Query();
+
+                                query.setFilterById(downloadId);
+
+                                android.database.Cursor cursor =
+                                        downloadManager.query(query);
+
+                                if (cursor != null && cursor.moveToFirst()) {
+                                    int status = cursor.getInt(
+                                            cursor.getColumnIndexOrThrow(
+                                                    DownloadManager.COLUMN_STATUS));
+
+                                    if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                                        downloading = false;
+                                        cursor.close();
+
+                                        runOnUiThread(
+                                                this::installDownloadedApk
+                                        );
+                                        continue;
+                                    }
+
+                                    if (status == DownloadManager.STATUS_FAILED) {
+                                        downloading = false;
+                                        cursor.close();
+
+                                        runOnUiThread(() ->
+                                                Toast.makeText(
+                                                        this,
+                                                        "APK download failed",
+                                                        Toast.LENGTH_LONG
+                                                ).show()
+                                        );
+                                        continue;
+                                    }
+                                }
+
+                                if (cursor != null) {
+                                    cursor.close();
+                                }
+
+                                try {
+                                    Thread.sleep(500);
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                    downloading = false;
+                                }
+                            }
+                        }).start();
+                    }
+                }
+        );
+        webView.setVisibility(View.GONE);
+        root.addView(webView, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        setContentView(root);
+
+        open.setOnClickListener(
+                v -> openPdf()
+        );
+
+        home.setOnClickListener(
+                v -> {
+                    documentView.setVisibility(View.GONE);
+                    webView.setVisibility(View.VISIBLE);
+                    webView.loadUrl("https://projects.mantusir.in");
+                }
+        );
+
+        share.setOnClickListener(
+                v -> sharePdf()
+        );
+    }
+
+    private void openPdf() {
+
+        Intent intent =
+                new Intent(
+                        Intent.ACTION_OPEN_DOCUMENT
+                );
+
+        intent.setType(
+                "application/pdf"
+        );
+
+        intent.addCategory(
+                Intent.CATEGORY_OPENABLE
+        );
+
+        intent.addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+        );
+
+        startActivityForResult(
+                intent,
+                OPEN_PDF
+        );
+    }
+
+    @Override
+    protected void onActivityResult(
+            int requestCode,
+            int resultCode,
+            Intent data) {
+
+        super.onActivityResult(
+                requestCode,
+                resultCode,
+                data
+        );
+
+        if (requestCode == OPEN_PDF
+                && resultCode == RESULT_OK
+                && data != null
+                && data.getData() != null) {
+
+            Uri uri =
+                    data.getData();
+
+            try {
+
+                getContentResolver()
+                        .takePersistableUriPermission(
+                                uri,
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        );
+
+            } catch (Exception ignored) {
+            }
+
+            loadPdf(uri);
+        }
+    }
+
+
+    private void installDownloadedApk() {
+        File downloadDir =
+                getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+
+        if (downloadDir == null) {
+            Toast.makeText(
+                    this,
+                    "Download folder unavailable",
+                    Toast.LENGTH_LONG
+            ).show();
+            return;
+        }
+
+        File apkFile = new File(downloadDir, "downloaded-app.apk");
+
+        if (!apkFile.exists()) {
+            Toast.makeText(
+                    this,
+                    "Downloaded APK not found",
+                    Toast.LENGTH_LONG
+            ).show();
+            return;
+        }
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            if (!getPackageManager().canRequestPackageInstalls()) {
+                Toast.makeText(
+                        this,
+                        "Allow PDF Viewer to install apps",
+                        Toast.LENGTH_LONG
+                ).show();
+
+                Intent settingsIntent =
+                        new Intent(
+                                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                Uri.parse("package:" + getPackageName())
+                        );
+
+                startActivity(settingsIntent);
+                return;
+            }
+        }
+
+        Uri apkUri = FileProvider.getUriForFile(
+                this,
+                getPackageName() + ".fileprovider",
+                apkFile
+        );
+
+        Intent installIntent = new Intent(
+                Intent.ACTION_VIEW,
+                apkUri
+        );
+
+        installIntent.setDataAndType(
+                apkUri,
+                "application/vnd.android.package-archive"
+        );
+
+        installIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        installIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+        startActivity(installIntent);
+    }
+
+    private void loadPdf(Uri uri) {
+        if (webView != null) {
+            webView.setVisibility(View.GONE);
+        }
+        if (documentView != null) {
+            documentView.setVisibility(View.VISIBLE);
+        }
+
+
+        closePdf();
+
+        try {
+
+            parcelFileDescriptor =
+                    getContentResolver()
+                            .openFileDescriptor(
+                                    uri,
+                                    "r"
+                            );
+
+            if (parcelFileDescriptor == null) {
+
+                throw new Exception(
+                        "Unable to open PDF"
+                );
+            }
+
+            renderer =
+                    new PdfRenderer(
+                            parcelFileDescriptor
+                    );
+
+            currentUri = uri;
+
+            String name =
+                    uri.getLastPathSegment();
+
+            if (name == null
+                    || name.trim().isEmpty()) {
+
+                name = "PDF Viewer";
+            }
+
+            titleView.setText(name);
+
+            renderAllPages();
+
+        } catch (Exception e) {
+
+            e.printStackTrace();
+
+            Toast.makeText(
+                    this,
+                    "Unable to open PDF",
+                    Toast.LENGTH_LONG
+            ).show();
+        }
+    }
+
+    private void renderAllPages() {
+
+        if (renderer == null) {
+            return;
+        }
+
+        List<Bitmap> pages =
+                new ArrayList<>();
+
+        for (int i = 0;
+             i < renderer.getPageCount();
+             i++) {
+
+            PdfRenderer.Page page = null;
+
+            try {
+
+                page =
+                        renderer.openPage(i);
+
+                int width =
+                        Math.max(
+                                1600,
+                                page.getWidth() * 3
+                        );
+
+                int height =
+                        Math.max(
+                                2200,
+                                page.getHeight() * 3
+                        );
+
+                Bitmap bitmap =
+                        Bitmap.createBitmap(
+                                width,
+                                height,
+                                Bitmap.Config.ARGB_8888
+                        );
+
+                bitmap.eraseColor(
+                        Color.WHITE
+                );
+
+                page.render(
+                        bitmap,
+                        null,
+                        null,
+                        PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY
+                );
+
+                pages.add(bitmap);
+
+            } catch (Exception e) {
+
+                e.printStackTrace();
+
+            } finally {
+
+                if (page != null) {
+                    page.close();
+                }
+            }
+        }
+
+        documentView.setPages(pages);
+    }
+
+    private void showSearch() {
+
+        if (currentUri == null) {
+
+            Toast.makeText(
+                    this,
+                    "Open a PDF first",
+                    Toast.LENGTH_SHORT
+            ).show();
+
+            return;
+        }
+
+        EditText input =
+                new EditText(this);
+
+        input.setHint(
+                "Search text"
+        );
+
+        AlertDialog dialog =
+                new AlertDialog.Builder(this)
+                        .setTitle("Search PDF")
+                        .setView(input)
+                        .setPositiveButton(
+                                "Search",
+                                null
+                        )
+                        .setNegativeButton(
+                                "Cancel",
+                                null
+                        )
+                        .create();
+
+        dialog.setOnShowListener(
+                d -> {
+
+                    dialog.getButton(
+                            AlertDialog.BUTTON_POSITIVE
+                    ).setOnClickListener(
+                            v -> {
+
+                                String query =
+                                        input.getText()
+                                                .toString()
+                                                .trim();
+
+                                if (!query.isEmpty()) {
+
+                                    searchPdf(query);
+
+                                    dialog.dismiss();
+                                }
+                            }
+                    );
+                }
+        );
+
+        dialog.show();
+    }
+
+    private void searchPdf(String query) {
+
+        new Thread(
+                () -> {
+
+                    List<Integer> results =
+                            new ArrayList<>();
+
+                    try {
+
+                        InputStream inputStream =
+                                getContentResolver()
+                                        .openInputStream(
+                                                currentUri
+                                        );
+
+                        PDDocument document =
+                                PDDocument.load(
+                                        inputStream
+                                );
+
+                        PDFTextStripper stripper =
+                                new PDFTextStripper();
+
+                        String wanted =
+                                query.toLowerCase(
+                                        Locale.ROOT
+                                );
+
+                        for (
+                                int i = 1;
+                                i <= document.getNumberOfPages();
+                                i++
+                        ) {
+
+                            stripper.setStartPage(i);
+
+                            stripper.setEndPage(i);
+
+                            String text =
+                                    stripper.getText(
+                                            document
+                                    );
+
+                            if (text != null
+                                    && text.toLowerCase(
+                                    Locale.ROOT
+                            ).contains(wanted)) {
+
+                                results.add(
+                                        i - 1
+                                );
+                            }
+                        }
+
+                        document.close();
+
+                    } catch (Exception e) {
+
+                        e.printStackTrace();
+                    }
+
+                    runOnUiThread(
+                            () -> {
+
+                                searchPages.clear();
+
+                                searchPages.addAll(
+                                        results
+                                );
+
+                                if (searchPages.isEmpty()) {
+
+                                    Toast.makeText(
+                                            this,
+                                            "Text not found",
+                                            Toast.LENGTH_SHORT
+                                    ).show();
+
+                                    return;
+                                }
+
+                                int page =
+                                        searchPages.get(0);
+
+                                documentView.scrollToPage(
+                                        page
+                                );
+
+                                Toast.makeText(
+                                        this,
+                                        "Found on "
+                                                + searchPages.size()
+                                                + " page(s)",
+                                        Toast.LENGTH_SHORT
+                                ).show();
+                            }
+                    );
+
+                }
+        ).start();
+    }
+
+    private void sharePdf() {
+
+        if (currentUri == null) {
+
+            Toast.makeText(
+                    this,
+                    "Open a PDF first",
+                    Toast.LENGTH_SHORT
+            ).show();
+
+            return;
+        }
+
+        Intent share =
+                new Intent(
+                        Intent.ACTION_SEND
+                );
+
+        share.setType(
+                "application/pdf"
+        );
+
+        share.putExtra(
+                Intent.EXTRA_STREAM,
+                currentUri
+        );
+
+        share.addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+        );
+
+        startActivity(
+                Intent.createChooser(
+                        share,
+                        "Share PDF"
+                )
+        );
+    }
+
+    private void closePdf() {
+
+        if (documentView != null) {
+
+            documentView.clearPages();
+        }
+
+        if (renderer != null) {
+
+            try {
+                renderer.close();
+            } catch (Exception ignored) {
+            }
+
+            renderer = null;
+        }
+
+        if (parcelFileDescriptor != null) {
+
+            try {
+                parcelFileDescriptor.close();
+            } catch (Exception ignored) {
+            }
+
+            parcelFileDescriptor = null;
+        }
+
+        currentUri = null;
+    }
+
+    @Override
+    protected void onDestroy() {
+
+        closePdf();
+
+        super.onDestroy();
+    }
+
+    /*
+     * ============================================================
+     * SINGLE DOCUMENT VIEW
+     *
+     * All PDF pages are drawn by this one View.
+     * Therefore one pinch gesture controls the entire document.
+     * ============================================================
+     */
+
+    private static class DocumentView extends View {
+
+        private final List<Bitmap> pages =
+                new ArrayList<>();
+
+        private final Paint paint =
+                new Paint(
+                        Paint.ANTI_ALIAS_FLAG
+                                | Paint.FILTER_BITMAP_FLAG
+                                | Paint.DITHER_FLAG
+                );
+
+        private final Paint shadowPaint =
+                new Paint(
+                        Paint.ANTI_ALIAS_FLAG
+                );
+
+        private final ScaleGestureDetector scaleDetector;
+
+        private float scale = 1.0f;
+
+        private float baseScale = 1.0f;
+
+        private float offsetX = 0f;
+
+        private float offsetY = 0f;
+
+        private float lastX;
+
+        private float lastY;
+
+        private boolean dragging = false;
+
+        private boolean pinching = false;
+
+        private static final float PAGE_GAP_DP = 12f;
+
+        private static final float MAX_ZOOM = 5.0f;
+
+        public DocumentView(
+                android.content.Context context) {
+
+            super(context);
+
+            setBackgroundColor(
+                    Color.rgb(
+                            245,
+                            245,
+                            245
+                    )
+            );
+
+            shadowPaint.setColor(
+                    Color.LTGRAY
+            );
+
+            scaleDetector =
+                    new ScaleGestureDetector(
+                            context,
+                            new ScaleGestureDetector
+                                    .SimpleOnScaleGestureListener() {
+
+                                @Override
+                                public boolean onScaleBegin(
+                                        ScaleGestureDetector detector) {
+
+                                    pinching = true;
+
+                                    getParent()
+                                            .requestDisallowInterceptTouchEvent(
+                                                    true
+                                            );
+
+                                    return true;
+                                }
+
+                                @Override
+                                public boolean onScale(
+                                        ScaleGestureDetector detector) {
+
+                                    if (pages.isEmpty()) {
+                                        return true;
+                                    }
+
+                                    float oldScale =
+                                            scale;
+
+                                    float newScale =
+                                            scale
+                                                    * detector
+                                                    .getScaleFactor();
+
+                                    newScale =
+                                            Math.max(
+                                                    baseScale,
+                                                    Math.min(
+                                                            baseScale
+                                                                    * MAX_ZOOM,
+                                                            newScale
+                                                    )
+                                            );
+
+                                    if (Math.abs(
+                                            oldScale - newScale
+                                    ) > 0.0001f) {
+
+                                        float focusX =
+                                                detector.getFocusX();
+
+                                        float focusY =
+                                                detector.getFocusY();
+
+                                        /*
+                                         * Zoom around the fingers.
+                                         */
+                                        float documentX =
+                                                (
+                                                        focusX
+                                                                - offsetX
+                                                )
+                                                        / oldScale;
+
+                                        float documentY =
+                                                (
+                                                        focusY
+                                                                - offsetY
+                                                )
+                                                        / oldScale;
+
+                                        scale =
+                                                newScale;
+
+                                        offsetX =
+                                                focusX
+                                                        - documentX
+                                                        * scale;
+
+                                        offsetY =
+                                                focusY
+                                                        - documentY
+                                                        * scale;
+
+                                        limitPan();
+
+                                        invalidate();
+                                    }
+
+                                    return true;
+                                }
+
+                                @Override
+                                public void onScaleEnd(
+                                        ScaleGestureDetector detector) {
+
+                                    pinching = false;
+
+                                    getParent()
+                                            .requestDisallowInterceptTouchEvent(
+                                                    false
+                                            );
+                                }
+                            }
+                    );
+        }
+
+        public void setPages(
+                List<Bitmap> newPages) {
+
+            clearPages();
+
+            pages.addAll(
+                    newPages
+            );
+
+            post(
+                    () -> {
+
+                        calculateBaseScale();
+
+                        offsetX = 0f;
+
+                        offsetY = 0f;
+
+                        invalidate();
+                    }
+            );
+        }
+
+        public void clearPages() {
+
+            for (Bitmap bitmap : pages) {
+
+                if (bitmap != null
+                        && !bitmap.isRecycled()) {
+
+                    bitmap.recycle();
+                }
+            }
+
+            pages.clear();
+
+            scale = 1f;
+
+            baseScale = 1f;
+
+            offsetX = 0f;
+
+            offsetY = 0f;
+
+            invalidate();
+        }
+
+        private void calculateBaseScale() {
+
+            if (pages.isEmpty()
+                    || getWidth() <= 0) {
+
+                return;
+            }
+
+            float maxWidth = 0f;
+
+            for (Bitmap bitmap : pages) {
+
+                maxWidth =
+                        Math.max(
+                                maxWidth,
+                                bitmap.getWidth()
+                        );
+            }
+
+            float availableWidth =
+                    getWidth()
+                            - dp(16);
+
+            baseScale =
+                    availableWidth
+                            / maxWidth;
+
+            baseScale =
+                    Math.max(
+                            0.01f,
+                            Math.min(
+                                    1.0f,
+                                    baseScale
+                            )
+                    );
+
+            scale =
+                    baseScale;
+        }
+
+        private int dp(float value) {
+
+            return (int) (
+                    value
+                            * getResources()
+                                    .getDisplayMetrics()
+                                    .density
+                            + 0.5f
+            );
+        }
+
+        private float pageGap() {
+
+            return dp(
+                    PAGE_GAP_DP
+            );
+        }
+
+        private float documentWidth() {
+
+            float width = 0f;
+
+            for (Bitmap bitmap : pages) {
+
+                width =
+                        Math.max(
+                                width,
+                                bitmap.getWidth()
+                        );
+            }
+
+            return width * scale;
+        }
+
+        private float documentHeight() {
+
+            float height = 0f;
+
+            float gap =
+                    pageGap();
+
+            for (Bitmap bitmap : pages) {
+
+                height +=
+                        bitmap.getHeight()
+                                * scale;
+
+                height += gap;
+            }
+
+            return height;
+        }
+
+        private void limitPan() {
+
+            float contentWidth =
+                    documentWidth();
+
+            float contentHeight =
+                    documentHeight();
+
+            float viewWidth =
+                    getWidth();
+
+            float viewHeight =
+                    getHeight();
+
+            /*
+             * Horizontal boundaries.
+             */
+            if (contentWidth <= viewWidth) {
+
+                offsetX =
+                        (viewWidth - contentWidth)
+                                / 2f;
+
+            } else {
+
+                float minX =
+                        viewWidth
+                                - contentWidth;
+
+                offsetX =
+                        Math.max(
+                                minX,
+                                Math.min(
+                                        0f,
+                                        offsetX
+                                )
+                        );
+            }
+
+            /*
+             * Vertical boundaries.
+             */
+            if (contentHeight <= viewHeight) {
+
+                offsetY =
+                        (viewHeight - contentHeight)
+                                / 2f;
+
+            } else {
+
+                float minY =
+                        viewHeight
+                                - contentHeight;
+
+                offsetY =
+                        Math.max(
+                                minY,
+                                Math.min(
+                                        0f,
+                                        offsetY
+                                )
+                        );
+            }
+        }
+
+        @Override
+        protected void onSizeChanged(
+                int width,
+                int height,
+                int oldWidth,
+                int oldHeight) {
+
+            super.onSizeChanged(
+                    width,
+                    height,
+                    oldWidth,
+                    oldHeight
+            );
+
+            calculateBaseScale();
+
+            limitPan();
+        }
+
+        @Override
+        protected void onDraw(
+                Canvas canvas) {
+
+            super.onDraw(canvas);
+
+            if (pages.isEmpty()) {
+                return;
+            }
+
+            float gap = pageGap();
+            float y = offsetY;
+            float viewTop = 0f;
+            float viewBottom = getHeight();
+
+            float documentWidth = documentWidth();
+
+            canvas.save();
+
+            /*
+             * Skip pages above the visible area.
+             * This avoids doing bitmap draw work for
+             * pages that cannot be seen.
+             */
+            int firstVisible = 0;
+
+            for (int i = 0; i < pages.size(); i++) {
+
+                Bitmap bitmap = pages.get(i);
+
+                float pageHeight =
+                        bitmap.getHeight() * scale;
+
+                if (y + pageHeight >= viewTop) {
+                    firstVisible = i;
+                    break;
+                }
+
+                y += pageHeight + gap;
+
+                if (i == pages.size() - 1) {
+                    canvas.restore();
+                    return;
+                }
+            }
+
+            /*
+             * Draw only visible pages.
+             */
+            for (int i = firstVisible;
+                 i < pages.size();
+                 i++) {
+
+                Bitmap bitmap = pages.get(i);
+
+                float pageWidth =
+                        bitmap.getWidth() * scale;
+
+                float pageHeight =
+                        bitmap.getHeight() * scale;
+
+                float x =
+                        offsetX
+                                + (documentWidth - pageWidth) / 2f;
+
+                if (y + pageHeight >= viewTop
+                        && y <= viewBottom) {
+
+                    canvas.drawRect(
+                            x + dp(2),
+                            y + dp(2),
+                            x + pageWidth + dp(2),
+                            y + pageHeight + dp(2),
+                            shadowPaint
+                    );
+
+                    canvas.drawBitmap(
+                            bitmap,
+                            null,
+                            new RectF(
+                                    x,
+                                    y,
+                                    x + pageWidth,
+                                    y + pageHeight
+                            ),
+                            paint
+                    );
+                }
+
+                y += pageHeight + gap;
+
+                if (y > viewBottom) {
+                    break;
+                }
+            }
+
+            canvas.restore();
+        }
+
+        @Override
+        public boolean onTouchEvent(
+                MotionEvent event) {
+
+            scaleDetector.onTouchEvent(
+                    event
+            );
+
+            switch (
+                    event.getActionMasked()
+            ) {
+
+                case MotionEvent.ACTION_DOWN:
+
+                    lastX =
+                            event.getX();
+
+                    lastY =
+                            event.getY();
+
+                    dragging = true;
+
+                    getParent()
+                            .requestDisallowInterceptTouchEvent(
+                                    true
+                            );
+
+                    return true;
+
+                case MotionEvent.ACTION_POINTER_DOWN:
+
+                    pinching = true;
+
+                    getParent()
+                            .requestDisallowInterceptTouchEvent(
+                                    true
+                            );
+
+                    return true;
+
+                case MotionEvent.ACTION_MOVE:
+
+                    if (pinching
+                            || scaleDetector.isInProgress()
+                            || event.getPointerCount() > 1) {
+
+                        return true;
+                    }
+
+                    if (dragging) {
+
+                        float dx =
+                                event.getX()
+                                        - lastX;
+
+                        float dy =
+                                event.getY()
+                                        - lastY;
+
+                        /*
+                         * Full four-direction document movement.
+                         */
+                        offsetX += dx;
+
+                        offsetY += dy;
+
+                        limitPan();
+
+                        lastX =
+                                event.getX();
+
+                        lastY =
+                                event.getY();
+
+                        invalidate();
+                    }
+
+                    return true;
+
+                case MotionEvent.ACTION_POINTER_UP:
+
+                    return true;
+
+                case MotionEvent.ACTION_UP:
+
+                    dragging = false;
+
+                    pinching = false;
+
+                    getParent()
+                            .requestDisallowInterceptTouchEvent(
+                                    false
+                            );
+
+                    return true;
+
+                case MotionEvent.ACTION_CANCEL:
+
+                    dragging = false;
+
+                    pinching = false;
+
+                    getParent()
+                            .requestDisallowInterceptTouchEvent(
+                                    false
+                            );
+
+                    return true;
+            }
+
+            return true;
+        }
+
+        public void scrollToPage(
+                int pageNumber) {
+
+            if (pageNumber < 0
+                    || pageNumber >= pages.size()) {
+
+                return;
+            }
+
+            float y = 0f;
+
+            float gap =
+                    pageGap();
+
+            for (int i = 0;
+                 i < pageNumber;
+                 i++) {
+
+                Bitmap bitmap =
+                        pages.get(i);
+
+                y +=
+                        bitmap.getHeight()
+                                * scale;
+
+                y += gap;
+            }
+
+            /*
+             * Put the selected page near the top.
+             */
+            offsetY =
+                    -y
+                            + dp(12);
+
+            limitPan();
+
+            invalidate();
+        }
+    }
+}
